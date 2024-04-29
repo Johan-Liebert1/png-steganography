@@ -3,10 +3,11 @@ use std::{
     fs::{File, OpenOptions},
     os::unix::fs::FileExt,
     process::exit,
-    usize,
+    usize, io::{stdin, stdout, Write},
 };
 
 use rand::Rng;
+use sha256::digest;
 
 use core::mem::size_of;
 
@@ -23,7 +24,7 @@ struct EncodeReq {
 }
 
 #[derive(Debug)]
-enum Command {
+enum CmdCommand {
     Encode(EncodeReq),
     Decode(String),
 }
@@ -128,7 +129,7 @@ fn decode_from_chunks(chunks: Vec<Chunk>) -> String {
     s
 }
 
-fn parse_args() -> Command {
+fn parse_args() -> CmdCommand {
     if let Some(cmd_name) = std::env::args().skip(1).next() {
         match cmd_name.as_str() {
             "enc" => {
@@ -140,7 +141,7 @@ fn parse_args() -> Command {
                     let mut output_file_name = String::from(&file_name[..idx]);
                     output_file_name.push_str("-output.png");
 
-                    return Command::Encode(EncodeReq {
+                    return CmdCommand::Encode(EncodeReq {
                         input_file_name: file_name,
                         output_file_name,
                         string_to_encode,
@@ -150,7 +151,7 @@ fn parse_args() -> Command {
 
             "dec" => {
                 if let Some(file_name) = std::env::args().skip(2).next() {
-                    return Command::Decode(file_name);
+                    return CmdCommand::Decode(file_name);
                 }
             }
 
@@ -351,9 +352,22 @@ fn main() {
     let cmd = parse_args();
 
     match cmd {
-        Command::Encode(enc_req) => encode_string_in_png(enc_req),
+        CmdCommand::Encode(enc_req) => encode_string_in_png(enc_req),
 
-        Command::Decode(file) => {
+        CmdCommand::Decode(file) => {
+            let mut pass = String::new();
+
+            print!("Password: ");
+            stdout().flush().unwrap();
+            stdin().read_line(&mut pass).expect("Incorrect string");
+
+            let digest = digest(pass);
+
+            if digest != MASTER {
+                eprintln!("Incorrect password");
+                exit(1);
+            }
+
             let chunks = get_chunks_to_decode(&file);
             let decoded = decode_from_chunks(chunks);
 
