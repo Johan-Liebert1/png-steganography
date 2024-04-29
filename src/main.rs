@@ -3,9 +3,10 @@ use std::{
     fs::{File, OpenOptions},
     os::unix::fs::FileExt,
     process::exit,
+    usize,
 };
 
-use rand::random;
+use rand::Rng;
 
 use core::mem::size_of;
 
@@ -15,8 +16,21 @@ const IEND_CHUNK: [u8; 4] = [73, 69, 78, 68];
 const MASTER: &str = "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03";
 
 #[derive(Debug)]
+struct EncodeReq {
+    input_file_name: String,
+    output_file_name: String,
+    string_to_encode: String,
+}
+
+#[derive(Debug)]
+enum Command {
+    Encode(EncodeReq),
+    Decode(String),
+}
+
+#[derive(Debug)]
 struct Chunk {
-    len: i32,
+    len: u32,
     code: [u8; 4],
     data: Vec<u8>,
     #[allow(dead_code)]
@@ -57,17 +71,16 @@ fn hide_char(character: char) -> Vec<u8> {
     let mut vec = vec![];
     let mut hidden_idx: Option<i32> = None;
 
-    for i in 0..10 {
-        let hide = random::<bool>();
+    for i in 0..25 {
+        let hide = rand::thread_rng().gen_range(0..100);
 
-        if hide && hidden_idx.is_none() {
+        if hide < 50 && hidden_idx.is_none() {
             vec.push(character as u8);
             hidden_idx = Some(i);
             continue;
         }
 
-        let len: f32 = (MASTER.len() - 1) as f32;
-        let random_idx = (random::<f32>() * len) as usize;
+        let random_idx = rand::thread_rng().gen_range(0..MASTER.len());
 
         vec.push(match MASTER.chars().nth(random_idx) {
             Some(c) => c as u8,
@@ -93,10 +106,11 @@ fn encode_string(string: String) -> Vec<Chunk> {
     let mut chunks = Vec::with_capacity(string.len());
 
     for char in string.chars() {
+        let char_vec = hide_char(char);
         chunks.push(Chunk {
-            len: 1,
+            len: char_vec.len() as u32,
             code: *b"blOB",
-            data: hide_char(char),
+            data: char_vec,
             crc: 0,
         });
     }
@@ -114,48 +128,80 @@ fn decode_from_chunks(chunks: Vec<Chunk>) -> String {
     s
 }
 
-fn main() {
-    let chunks = encode_string(String::from("hello"));
-    println!("Decoded: {}", decode_from_chunks(chunks));
+fn parse_args() -> Command {
+    if let Some(cmd_name) = std::env::args().skip(1).next() {
+        match cmd_name.as_str() {
+            "enc" => {
+                if let (Some(file_name), Some(string_to_encode)) = (
+                    std::env::args().skip(2).next(),
+                    std::env::args().skip(3).next(),
+                ) {
+                    let idx = file_name.rfind(".").unwrap_or(file_name.len());
+                    let mut output_file_name = String::from(&file_name[..idx]);
+                    output_file_name.push_str("-output.png");
 
-    let (input_file_name, output_file_name) = if let Some(thing) = std::env::args().skip(1).next() {
-        let idx = thing.rfind(".").unwrap_or(thing.len());
-        let mut output_file_name = String::from(&thing[..idx]);
-        output_file_name.push_str("-output.png");
+                    return Command::Encode(EncodeReq {
+                        input_file_name: file_name,
+                        output_file_name,
+                        string_to_encode,
+                    });
+                }
+            }
 
-        (thing, output_file_name)
-    } else {
-        ("./tux.png".into(), "./tux-output.png".into())
+            "dec" => {
+                if let Some(file_name) = std::env::args().skip(2).next() {
+                    return Command::Decode(file_name);
+                }
+            }
+
+            _ => panic!("wtf bro {cmd_name}"),
+        }
     };
+
+    panic!("wtf bro");
+}
+
+fn validate_png(file_bytes: &[u8], input_file_name: &String) {
+    if file_bytes[..PNG_HEADER.len()] != PNG_HEADER {
+        eprintln!(
+            "File {} is NOT a valid PNG file. PNG header mismatch.",
+            input_file_name
+        );
+        exit(1);
+    }
+}
+
+fn encode_string_in_png(enc_req: EncodeReq) {
+    let chunks = encode_string(enc_req.string_to_encode);
 
     let mut file_write_offset = 0;
 
-    let file_bytes = match std::fs::read(format!("{input_file_name}")) {
+    let file_bytes = match std::fs::read(format!("{}", enc_req.input_file_name)) {
         Ok(b) => b,
 
         Err(err) => {
-            eprintln!("Failed to open file {input_file_name}. Err: {err}");
+            eprintln!(
+                "Failed to open file {}. Err: {err}",
+                enc_req.input_file_name
+            );
             exit(1);
         }
     };
 
-    if file_bytes[..PNG_HEADER.len()] != PNG_HEADER {
-        eprintln!("File {input_file_name} is NOT a valid PNG file. PNG header mismatch.");
-        exit(1);
-    }
-
     let mut current_index = PNG_HEADER.len();
+
+    validate_png(&file_bytes, &enc_req.input_file_name);
 
     let output_file = OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
-        .open(&output_file_name);
+        .open(&enc_req.output_file_name);
 
     let output_file = match output_file {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("Failed to open file {output_file_name}. Err: {e}");
+            eprintln!("Failed to open file {}. Err: {e}", enc_req.output_file_name);
             exit(1);
         }
     };
@@ -220,22 +266,98 @@ fn main() {
 
         // All the IDAT chunks have to be consecutive
         if chunk_code_as_str == "PLTE" {
-            let chunk = Chunk {
-                len: 4,
-                code: *b"coDE",
-                data: b"hide".to_vec(),
-                crc: 0,
-            };
+            for chunk in &chunks {
+                let thing = write_chunk_to_file(&output_file, &chunk.to_bytes(), file_write_offset)
+                    .unwrap_or(0);
 
-            let thing = write_chunk_to_file(&output_file, &chunk.to_bytes(), file_write_offset)
-                .unwrap_or(0);
-
-            file_write_offset += thing as u64;
+                file_write_offset += thing as u64;
+            }
         }
 
         if chunk_code == IEND_CHUNK {
             println!("Encountered IEND");
             break;
+        }
+    }
+}
+
+fn get_chunks_to_decode(file_name: &String) -> Vec<Chunk> {
+    let mut chunks = vec![];
+
+    let file_bytes = match std::fs::read(format!("{}", file_name)) {
+        Ok(b) => b,
+
+        Err(err) => {
+            eprintln!("Failed to open file {}. Err: {err}", file_name);
+            exit(1);
+        }
+    };
+
+    let mut current_index = PNG_HEADER.len();
+
+    validate_png(&file_bytes, &file_name);
+
+    loop {
+        let chunk_len_as_u8: Result<[u8; 4], _> =
+            file_bytes[current_index..current_index + 4].try_into();
+
+        let chunk_len_as_u8 = match chunk_len_as_u8 {
+            Ok(c) => c,
+
+            Err(err) => {
+                eprintln!("Failed to get chunk length. Err: {err}");
+                exit(1);
+            }
+        };
+
+        // This is stored in big endian
+        let chunk_len = u32::from_be_bytes(chunk_len_as_u8);
+        current_index += 4;
+
+        let chunk_code: &[u8; 4] = &file_bytes[current_index..current_index + 4]
+            .try_into()
+            .unwrap();
+        current_index += 4;
+
+        let _chunk_data = &file_bytes[current_index..current_index + (chunk_len as usize)];
+        current_index += chunk_len as usize;
+
+        let crc_as_i32: &[u8; 4] = &file_bytes[current_index..current_index + 4]
+            .try_into()
+            .unwrap();
+        let crc = i32::from_be_bytes(*crc_as_i32);
+        current_index += 4;
+
+        let chunk_code_as_str = u8_to_str(chunk_code);
+
+        if chunk_code_as_str == "blOB" {
+            chunks.push(Chunk {
+                len: chunk_len,
+                code: *chunk_code,
+                data: _chunk_data.to_vec(),
+                crc,
+            });
+        }
+
+        if chunk_code == &IEND_CHUNK {
+            break;
+        }
+    }
+
+    chunks
+}
+
+fn main() {
+    let cmd = parse_args();
+
+    match cmd {
+        Command::Encode(enc_req) => encode_string_in_png(enc_req),
+
+        Command::Decode(file) => {
+            let chunks = get_chunks_to_decode(&file);
+            let decoded = decode_from_chunks(chunks);
+
+            println!("decode: {decoded}");
         }
     }
 }
