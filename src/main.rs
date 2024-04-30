@@ -1,13 +1,14 @@
 use std::{
     char,
     fs::{File, OpenOptions},
-    os::unix::fs::FileExt,
+    os::{unix::fs::FileExt, fd::AsRawFd},
     process::exit,
     usize, io::{stdin, stdout, Write},
 };
 
 use rand::Rng;
 use sha256::digest;
+use termios::{Termios, ECHO, tcsetattr, TCSANOW};
 
 use core::mem::size_of;
 
@@ -357,9 +358,22 @@ fn main() {
         CmdCommand::Decode(file) => {
             let mut pass = String::new();
 
+            let stdin_fd = stdin().as_raw_fd();
+            let mut termios = Termios::from_fd(stdin_fd).unwrap();
+            let original_termios = termios;
+
+            // Prevent echo
+            termios.c_lflag &= !ECHO;
+            tcsetattr(stdin_fd, TCSANOW, &termios).unwrap();
+
             print!("Password: ");
             stdout().flush().unwrap();
             stdin().read_line(&mut pass).expect("Incorrect string");
+
+            // Restore echo
+            tcsetattr(stdin_fd, TCSANOW, &original_termios).unwrap();
+
+            println!();
 
             let digest = digest(pass);
 
