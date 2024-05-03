@@ -277,7 +277,6 @@ fn encode_string_in_png(enc_req: EncodeReq) {
         }
 
         if chunk_code == IEND_CHUNK {
-            println!("Encountered IEND");
             break;
         }
     }
